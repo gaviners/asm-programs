@@ -50,7 +50,7 @@ task segment
 assume cs:task
 org 7c00H
 
-    jmp task_
+    jmp short task_
     install_start dw 2000H,00H
     ; 将第二扇区的内容加载到0：2000H
     ; 然后跳转到2000H执行
@@ -397,6 +397,10 @@ cls:
     pop cx
     ret
 
+install ends
+
+; 中断需要单独放置，因为代码不是连起来的，会导致中断程序出错
+interrupt segment
 ; 键盘中断程序
 ; 安装到200H
 org 200H
@@ -547,7 +551,7 @@ int7cret:
 int7cend:
     nop
 
-install ends
+interrupt ends
 
 end start
 
