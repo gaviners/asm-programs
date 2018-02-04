@@ -1,35 +1,81 @@
-; 编写引导程序，写入到软盘第1扇区
+; 2018年2月3号
+; 功能实现：
+;       编写引导程序，实现如下的4个功能
+;            1) reset pc
+;            2) start system
+;            3) clock
+;            4) set clock
+;       将引导程序写入软盘，从软盘启动
 
+; 基本实现思路：
+    
 
-assume cs:code 
 code segment
+assume cs:code 
 ;-----------------------------------------------------
 ; 下面为主程序，执行将任务程序写入到软盘上去
 start:
-    jmp task
-    ;mov dx,seg task 
-    ;mov dx,offset task 
-    ;mov ax,cs
-    ;mov es,ax
-    ;mov bx,offset task
+    ;jmp task
+    ; 将task写入到软盘第一扇区
+    mov ax,task
+    mov es,ax
+    mov bx,7c00H
+    mov dl,0
+    mov dh,0
+    mov ch,0
+    mov cl,1
+    ; 功能选择,
+    mov ah,3
+    mov al,1
+    int 13H
+    ; 将install写入到软盘第二扇区
+    mov ax,install
+    mov es,ax
+    mov bx,2000H
+    mov ch,0
+    mov cl,2
+    mov ah,3
+    mov al,2
+    int 13H
 
-    ;mov al,1
-    ;mov ch,0
-    ;mov cl,1
-    ;mov dh,0
-    ;mov dl,0
-    ;mov ah,3
-    ;int 13H
-
-    ;mov ax,4c00H
-    ;int 21H
+    mov ax,4c00H
+    int 21H
+code ends
 ;-----------------------------------------------------
 ; 下面为任务程序
+; 需要使用到两个扇区的程序，第一个扇区的程序负责将第二扇区的代码加载到2000H:0处
+; 不直接加载到0:7c00H,是因为需要将操作系统的代码加载到这里
+; 考虑代码长度，读取两个扇区
+task segment
+assume cs:task
 org 7c00H
-task:
 
+    jmp task_
+    install_start dw 2000H,00H
+    ; 将第二扇区的内容加载到0：2000H
+    ; 然后跳转到2000H执行
+task_:
+    mov ax,install_start[2]
+    mov es,ax
+    mov bx,install_start[0]
+    mov dl,0
+    mov dh,0
+    mov ch,0
+    mov cl,2
+    ; 功能选择
+    mov ah,2
+    mov al,2
+    int 13H
+    jmp dword ptr install_start
+
+task ends
+
+;----------------------------------------------------------------------------
+install segment
+assume cs:install
+org 2000H
     jmp taskstart
-    stack dw 64 dup (0)
+    stack dw 16 dup (0)
     ; subprog  子程序的地址
     ; subindex 根据索引调用子程序
     ; subsign  是否调用子程序
@@ -48,6 +94,10 @@ sp_addr:
     rows     db 11,12,13,14
     columns  db 10,10,10,10
     time     db 9,8,7,4,2,0
+    timebuff db 0,1,3,4,6,7,9,10,12,13,15,16
+
+
+
 
 taskstart:
     ; 初始化
@@ -97,13 +147,53 @@ nosub:
     jmp short forever
 
 ; reset pc 的逻辑代码
+; 将 CS:IP 设置为ffff:0
 sub1:
-    nop
-    ret
+    mov ax,0ffffH
+    push ax
+    mov ax,00H
+    push ax
+    retf
+
+;-----------------------------------------------------------
 ; start system 的逻辑代码
+; 实现思路如下：
+;   (1) 将c盘的第0面，第0磁道，第1扇区的512字节加载到内存中,加载地址为：
+;   (2) 然后将CS:IP 设置为加载地址0:8c00H
+;
+; 采用int13中断，硬盘读写程序
+; 参数：
+;   ah: int13功能号（2表示读，3表示写）
+;   al: 读取的扇区数
+;   dl: 驱动器号，软盘从0开始，硬盘从80开始
+;   dh: 磁头号，每个面使用一个磁头读写
+;   ch: 磁道号
+;   cl: 扇区号
+;   es:bx 内存区
+; 返回参数
+;   操作成功：ah=0,al=扇区数
+;   操作失败：ah=出错代码
+
 sub2:
-    nop
-    ret
+    mov ax,0
+    mov es,ax
+    mov bx,7c00H
+    ; 驱动器号为80H，c盘
+    mov dl,80H
+    mov dh,0
+    mov ch,0
+    mov cl,1
+    ; 功能选择
+    mov ah,2
+    mov al,1
+    int 13H
+    ; 错误处理
+
+    mov ax,00H
+    push ax
+    mov ax,7c00H
+    push ax
+    retf
 
 ; clock 的逻辑代码
 sub3:
@@ -116,7 +206,50 @@ sub3s:
     jmp sub3s
 sub3ret:
     ret
-    
+
+
+; set clock 的逻辑代码
+; 实现思路如下：
+;   (1) 清屏幕
+;   (2) 
+;
+;
+;
+sub4:
+    nop
+
+; 显示主界面
+show_mainpage:
+    call clscreen
+    push ds
+    push bx
+    push cx
+    push di
+    push si
+
+    mov bx,cs
+    mov ds,bx
+    mov bx,0
+    mov di,0
+    mov cx,4
+sects:
+    mov si,sections[bx]
+    mov dh,rows[di]
+    mov dl,columns[di]
+    call show_str
+    add bx,2
+    inc di
+    loop sects
+
+    pop si
+    pop di
+    pop cx
+    pop bx
+    pop ds
+    ret
+
+
+; 显示时间子程序 
 show_t:
     push ax
     push bx
@@ -183,47 +316,12 @@ show_number:
     pop bx
     ret 
 
-
 show_sign:
     push bx
     mov bx, 0b800H
     mov es,bx
     mov byte ptr es:[12*160+32*2+4+si],dl
     pop bx
-    ret
-
-; set clock 的逻辑代码
-sub4:
-    nop
-
-; 显示主界面
-show_mainpage:
-    call clscreen
-    push ds
-    push bx
-    push cx
-    push di
-    push si
-
-    mov bx,cs
-    mov ds,bx
-    mov bx,0
-    mov di,0
-    mov cx,4
-sects:
-    mov si,sections[bx]
-    mov dh,rows[di]
-    mov dl,columns[di]
-    call show_str
-    add bx,2
-    inc di
-    loop sects
-
-    pop si
-    pop di
-    pop cx
-    pop bx
-    pop ds
     ret
 
 ; 显示字符串，以0结尾
@@ -320,7 +418,7 @@ int7cstart:
     call dword ptr int9
 
     ; 取出pagesel的段地址，放到ds中
-    mov bx,seg pagesel
+    mov bx,install
     mov ds,bx
     mov al,ds:[pagesel]
     cmp al,4
@@ -378,7 +476,10 @@ forth_page:
 
 ; 重启计算机和引导现有的操作系统不需要额外操作
 sub1set:
+    jmp int7cret
 sub2set:
+    mov ds:[pagesel],0
+    mov ds:[subsign],0
     jmp int7cret
 ; 在时间显示界面，需要配置f1和esc
 sub3set:
@@ -446,10 +547,7 @@ int7cret:
 int7cend:
     nop
 
-
-taskend:
-    nop
-code ends
+install ends
 
 end start
 
