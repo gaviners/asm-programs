@@ -4,8 +4,6 @@
 ;   email:          zhishengqianjun@163.com
 ;   finish time:    2018/02/04
 ;---------------------------------------------------------------------------
-;
-;---------------------------------------------------------------------------
 ; 功能实现：
 ;       编写引导程序，实现如下的4个功能
 ;            1) reset pc
@@ -14,22 +12,19 @@
 ;            4) set clock
 ;       将引导程序写入软盘，从软盘启动
 ;---------------------------------------------------------------------------
-;
-;---------------------------------------------------------------------------
-;
-; 基本实现思路：
-;---------------------------------------------------------------------------
 
 ;================================================
-;   
+;   安装代码
+;       将任务代码安装到软盘上去
+;   任务代码分成4部分：
+;       1、内存加载代码， 存放在第一扇区
+;       2、配置信息代码， 存放在第二扇区
+;       3、主程序代码，   存放在三、四扇区
+;       4、中断程序代码， 存放在五扇区
 ;================================================
-
 code segment
 assume cs:code 
-;-----------------------------------------------------
-; 下面为主程序，执行将任务程序写入到软盘上去
 start:
-    ;jmp task
     ; 将task写入到软盘第一扇区
     mov ax,task
     mov es,ax
@@ -42,156 +37,205 @@ start:
     mov al,1
     int 13H
 
-    ; 将install写入到软盘第二，三扇区
+    ; 将config配置信息加载到第2扇区
+    mov ax,config
+    mov es,ax
+    mov bx,0
+    mov dl,0
+    mov dh,0
+    mov ch,0
+    mov cl,2
+    mov ah,3
+    mov al,1
+    int 13H
+
+    ; 将install写入到软盘第3,4扇区
     mov ax,install
     mov es,ax
     mov bx,0
+    mov dl,0
+    mov dh,0
     mov ch,0
-    mov cl,2
+    mov cl,3
     mov ah,3
     mov al,2
     int 13H
 
-    ; 将中断程序写到软盘的第4扇区
+    ; 将中断程序写到软盘的第5扇区
     mov ax,interrupt
     mov es,ax
     mov bx,200H
     mov dl,0
     mov dh,0
     mov ch,0
-    mov cl,4
+    mov cl,5
     mov ah,3
-    mov al,2
+    mov al,1
     int 13H
 
+    ; 调用结束中断
     mov ax,4c00H
     int 21H
 code ends
-;-----------------------------------------------------
-; 下面为任务程序
-; 需要使用到两个扇区的程序，第一个扇区的程序负责将第二扇区的代码加载到2000H:0处
-; 不直接加载到0:7c00H,是因为需要将操作系统的代码加载到这里
-; 考虑代码长度，读取两个扇区
+
+;================================================
+;   配置信息
+;       配置软盘存放地址： 第2扇区
+;       配置内存存放地址： 2000:0
+;================================================
+config segment
+    subindex         db 0
+    subsign          db 0
+    pagesel          db 0
+    init_addr        dw 7c00H,00H
+    install_addr     dw 00H,2400H
+    interrupt_addr   dw 00H,2800H
+    interrupt_inst   dw 200H,00H
+    interrupt_9      dw 4*9,0
+    subprog          dw sub1,sub2,sub3,sub4
+    time_lc          dw 12*160,32*2 
+    section1         db '1) reset pc',0
+    section2         db '2) start system',0
+    section3         db '3) clock',0
+    section4         db '4) set clock',0
+    sections         dw section1,section2,section3,section4
+    rows             db 11,12,13,14
+    columns          db 10,10,10,10
+    time             db 9,8,7,4,2,0
+    timebuff         db 0,1,3,4,6,7,9,10,12,13,15,16
+
+config ends
 
 
 ;================================================
-;   
+;   内存加载
+;       将配置信息，主程序以及中断代码加载到内存中
+;       将配置信息加载到2000:0处，后面的加载地址从配置信息中读取
 ;================================================
 task segment
 assume cs:task
 org 7c00H
-
     jmp short task_
-    install_start   dw 00H,5000H
-    interrupt_start dw 00H,6000H
-    ; 将第2,3扇区的内容加载到2000:0开始的内存中
-    ; 将第4扇区的内容加载到3000:0开始的内存中
-    ; 然后跳转到2000:0执行代码
+    config_address dw 00H,2000H
+
 task_:
-    mov ax,install_start[2]
+    ; 将第二扇区的配置信息加载到内存中
+    mov ax,config_address[2]
     mov es,ax
-    mov bx,install_start[0]
+    mov bx,config_address[0]
     mov dl,0
     mov dh,0
     mov ch,0
     mov cl,2
     mov ah,2
+    mov al,1
+    int 13H
+
+    ; 根据配置信息初始化变量
+    mov ax,config_address[2]
+    mov ds,ax
+
+    ; 主程序代码加载
+    mov ax,ds:[install_addr+2]
+    mov es,ax
+    mov bx,ds:[install_addr]
+    mov dl,0
+    mov dh,0
+    mov ch,0
+    mov cl,3
+    mov ah,2
     mov al,2
     int 13H
 
     ; 中断程序加载
-    mov ax,interrupt_start[2]
+    mov ax,ds:[interrupt_addr+2]
     mov es,ax
-    mov bx,interrupt_start[0]
+    mov bx,ds:[interrupt_addr]
     mov dl,0
     mov dh,0
     mov ch,0
-    mov cl,4
+    mov cl,5
     mov ah,2
-    mov al,2
+    mov al,1
     int 13H
+
     ; 跳转到任务程序开始执行
-    jmp dword ptr install_start
+    jmp dword ptr ds:[install_addr]
 
 task ends
 
 
 ;================================================
-;   
+;   主程序
+;       主程序显示界面，通过判断不同的标志位，调用不同子程序
+;   标志位存储在配置信息段
+;   <一个小问题，配置信息的地址还是要写上，不然无法获取>
+;   <所以要修改的话，还是会修改多个地方，直接写还是会有问题>
 ;================================================
 install segment
 assume cs:install
-
-    jmp taskstart
-    stack dw 32 dup (0)
-sp_addr:
-    ; subprog  子程序的地址
-    ; subindex 根据索引调用子程序
-    ; subsign  是否调用子程序
-    ; pagesel  表示当前正处在哪一个页面中，取值为0，1，2，3，4，分别代表主界面和其他四个选项
-    subprog  dw sub1,sub2,sub3,sub4
-    subindex db 0
-    subsign  db 0
-    pagesel  db 0
-    time_lc  dw 10*160,0*2
-    section1 db '1) reset pc',0
-    section2 db '2) start system',0
-    section3 db '3) clock',0
-    section4 db '4) set clock',0
-    sections dw section1,section2,section3,section4
-    rows     db 11,12,13,14
-    columns  db 10,10,10,10
-    time     db 9,8,7,4,2,0
-    timebuff db 0,1,3,4,6,7,9,10,12,13,15,16
-
-
-
+    jmp short taskstart
+    config_address_inst  dw 00H,2000H
+    stack                dw 32 dup (0)
 
 taskstart:
     ; 初始化
     mov ax,cs
     mov ss,ax
-    mov sp,offset sp_addr
+    mov sp,offset taskstart
 
 
     ; 中断安装
-    ; 首先要根据中断程序在内存中的位置，初始化变量
-    mov ax,6000H
-
+    ; 首先要根据配置信息，初始化变量
+    mov ax,config_address_inst[2]
     mov ds,ax
-    mov si,0
-    mov ax,0
+    mov ax,ds:[interrupt_inst+2]
     mov es,ax
-    mov di,200H
+    mov di,ds:[interrupt_inst]
+    
+    mov bx,ds:[interrupt_addr+2]
+    mov si,ds:[interrupt_addr]
+    mov ds,bx
 
     mov cx,offset int7cend - offset int7c
     cld
     rep movsb
 
     ; 配置原int9的中断地址
-    push es:[4*9]
-    pop es:[202H]
-    push es:[4*9+2]
-    pop es:[204H]
+    mov ax,config_address_inst[2]
+    mov ds,ax
+    mov bx,ds:[interrupt_9]
+    mov ax,ds:[interrupt_inst+2]
+    mov es,ax
+    mov bp,ds:[interrupt_inst]
+    mov ax,ds:[interrupt_9+2]
+    mov ds,ax
+    push ds:[bx]
+    pop es:[bp+2]
+    push ds:[bx+2]
+    pop es:[bp+4]
 
-    ; 配置新的int9地址,这时候不允许键盘中断，否则会出错
+    ; 配置新的int9地址,这时候不允许键盘中断
     cli
-    mov word ptr es:[4*9],0200H
-    mov word ptr es:[4*9+2],0000H
+    mov word ptr ds:[bx],bp
+    mov word ptr ds:[bx+2],es
     sti
 
     ; 进入主循环
     jmp main
+
 main:
+    mov ax,config_address_inst[2]
+    mov ds,ax
     call show_mainpage
 forever:
-    cmp subsign,0
+    cmp byte ptr ds:[subsign],0
     je nosub
-    mov subsign,0
+    mov byte ptr ds:[subsign],0
     push bx
-    mov bl,subindex
+    mov bl, ds:[subindex]
     mov bh,0
-    call word ptr subprog[bx]
+    call word ptr ds:[subprog+bx]
     pop bx
     call show_mainpage
 nosub:
@@ -201,11 +245,15 @@ nosub:
 ; reset pc 的逻辑代码
 ; 将 CS:IP 设置为ffff:0
 sub1:
+    push ax
+
     mov ax,0ffffH
     push ax
     mov ax,00H
     push ax
     retf
+    pop ax
+    ret
 
 ;-----------------------------------------------------------
 ; start system 的逻辑代码
@@ -227,6 +275,10 @@ sub1:
 ;   操作失败：ah=出错代码
 
 sub2:
+    push ax
+    push bx
+    push cx
+    push es
     mov ax,0
     mov es,ax
     mov bx,7c00H
@@ -240,12 +292,19 @@ sub2:
     mov al,1
     int 13H
     ; 错误处理
-
+    cmp ah,0
+    jne sub2ret
     mov ax,00H
     push ax
     mov ax,7c00H
     push ax
     retf
+sub2ret:
+    pop es
+    pop cx
+    pop bx
+    pop ax
+    ret
 
 ; clock 的逻辑代码
 sub3:
@@ -253,7 +312,7 @@ sub3:
 sub3s:
     call show_t
     call delay
-    cmp pagesel,0
+    cmp byte ptr ds:[pagesel],0
     je sub3ret
     jmp sub3s
 sub3ret:
@@ -269,6 +328,7 @@ sub3ret:
 ;
 sub4:
     nop
+    ret
 
 ; 显示主界面
 show_mainpage:
@@ -279,15 +339,15 @@ show_mainpage:
     push di
     push si
 
-    mov bx,cs
-    mov ds,bx
+    mov ax,config_address_inst[2]
+    mov ds,ax
     mov bx,0
     mov di,0
     mov cx,4
 sects:
-    mov si,sections[bx]
-    mov dh,rows[di]
-    mov dl,columns[di]
+    mov si,ds:[sections+bx]
+    mov dh,ds:[rows+di]
+    mov dl,ds:[columns+di]
     call show_str
     add bx,2
     inc di
@@ -307,14 +367,20 @@ show_t:
     push bx
     push cx
     push si
+    push bp
+    push ds
 
+    mov ax,config_address_inst[2]
+    mov ds,ax
+    mov bp,ds:[time_lc]
+    add bp,ds:[time_lc+2]
     mov bx,0
     mov cx,6
     mov si,0
 
 show_time:
     push cx
-    mov al,time[bx]
+    mov al,ds:[time+bx]
     out 70H,al
     in al,71H
 
@@ -351,6 +417,8 @@ circle:
     add si,6
     loop show_time
 
+    pop ds
+    pop bp
     pop si
     pop cx
     pop bx
@@ -362,17 +430,19 @@ show_number:
     push es
     mov bx,0b800H
     mov es,bx
-    mov byte ptr es:[12*160+32*2+si],ah
-    mov byte ptr es:[12*160+32*2+2+si],al
+    mov byte ptr es:[bp+si],ah
+    mov byte ptr es:[bp+si],al
     pop es
     pop bx
     ret 
 
 show_sign:
     push bx
+    push es
     mov bx, 0b800H
     mov es,bx
-    mov byte ptr es:[12*160+32*2+4+si],dl
+    mov byte ptr es:[bp+si],dl
+    pop es
     pop bx
     ret
 
@@ -452,102 +522,99 @@ cls:
 install ends
 
 ;================================================
-;   
-; 中断需要单独放置，因为代码不是连起来的，会导致中断程序出错
+;   中断程序
+;       重写键盘中断程序，对应的页面更改相应的标记位
 ;================================================
 interrupt segment
 assume cs:interrupt
-; 键盘中断程序
-; 安装到200H
 org 200H
 int7c:
     jmp short int7cstart
-    int9 dw 0,0
-    table dw sub0set,sub1set,sub2set,sub3set,sub4set
-    mainpage dw first_page,second_page,third_page,forth_page
+    int9                    dw 0,0
+    config_address_inter    dw 00H,2000H
+    table                   dw sub0set,sub1set,sub2set,sub3set,sub4set
+    mainpage                dw first_page,second_page,third_page,forth_page
 int7cstart:
-    ; 首先根据页面，进入程序选择子程序
     push ax
     push bx
     push dx
     push ds
 
+    ; 读取键盘扫描码
     in al,60H
-    mov dl,al
+
+    ; 调用int9键盘中断
     pushf
     call dword ptr int9
 
-    ; 取出pagesel的段地址，放到ds中，后面会统一到配置信息段读取
-    mov bx,5000H
+    ; 取出配置信息的段地址，放到ds中
+    mov bx,config_address_inter[2]
     mov ds,bx
-    mov al,ds:[pagesel]
-    cmp al,4
-    ja input_error
-    mov bl,al
+    mov bl,ds:[pagesel]
+    cmp bl,4
+    ja interrupt_exit
     mov bh,0
     add bx,bx
-    jmp word ptr table[bx]
-
-; 比较指令之后的转移，都是短转移
-input_error:
-    jmp int7cret
+    call word ptr table[bx]
+interrupt_exit:
+    pop ds
+    pop dx
+    pop bx
+    pop ax
+    iret
 
 ; 主页面
 sub0set:
-    mov al,dl
-    ; 判断是否是1~4
+    ; 判断是否是数字1~4,其扫描码是2，3，4，5
     cmp al,5
-    ja sub0exit
+    ja sub0ret
     cmp al,2
-    jb sub0exit
+    jb sub0ret
     mov bl,al
     sub bl,2
     mov bh,0
     add bx,bx
-    jmp word ptr mainpage[bx]
-sub0exit:
-    jmp int7cret
+    call word ptr mainpage[bx]
+
+sub0ret:
+    ret
+
 ; 对应每个选项卡，执行对应的配置
-; 配置子程序的选项：
-;      子程序索引
-;      子程序调用
-; 配置页面选项：
-;      页面标记
 first_page:
     mov ds:[pagesel],1
     mov ds:[subindex],0
     mov ds:[subsign],1
-    jmp int7cret
+    ret
 second_page:
     mov ds:[pagesel],2
     mov ds:[subindex],2
     mov ds:[subsign],1
-    jmp int7cret
+    ret
 third_page:
     mov ds:[pagesel],3
     mov ds:[subindex],4
     mov ds:[subsign],1
-    jmp int7cret
+    ret
 forth_page:
     mov ds:[pagesel],4
     mov ds:[subindex],6
     mov ds:[subsign],1
-    jmp int7cret
+    ret
 
-; 重启计算机和引导现有的操作系统不需要额外操作
+; 重启计算机选项
 sub1set:
+    ret
+
+; 引导现有操作系统
 sub2set:
-    mov ds:[pagesel],0
-    mov ds:[subindex],0
-    mov ds:[subsign],0
-    jmp int7cret
-; 在时间显示界面，需要配置f1和esc
+    ret
+
+; 时间显示
 sub3set:
     push es
     push bx
     push cx
-    ; 取出扫描码
-    mov al,dl
+
     ; 判断是否是f1
     cmp al,3bH
     je sub3_f1
@@ -559,7 +626,8 @@ sub3set:
 sub3_f1:
     mov bx,0b800H
     mov es,bx
-    mov bx,12*160+32*2
+    mov bx,ds:[time_lc]
+    add bx,ds:[time_lc+2]
     mov cx,17
 f1_s:
     
@@ -570,48 +638,19 @@ f1_s:
 
 sub3_esc:
     mov ds:[pagesel],0
-    mov ds:[subindex],0
-    mov ds:[subsign],0
     jmp sub3set_end 
 sub3set_end:
     pop cx
     pop bx
     pop es
-    jmp int7cret
+    ret
 
+; 设置时间
 sub4set:
-    push es
-    push bx
-    push cx
+    ret
 
-    ; 取出扫描码
-    mov al,dl
-    ; 判断是否是esc
-    cmp al,01H
-    je sub4_esc
-    jmp sub4set_end
-sub4_esc:
-    mov ds:[pagesel],0
-    mov ds:[subindex],0
-    mov ds:[subsign],0
-    jmp sub4set_end
-
-sub4set_end:
-    pop cx
-    pop bx
-    pop es
-    jmp int7cret
-
-int7cret:
-    pop ds
-    pop dx
-    pop bx
-    pop ax
-    iret
 int7cend:
     nop
 
 interrupt ends
-
 end start
-
